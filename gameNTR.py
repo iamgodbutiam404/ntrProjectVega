@@ -4,13 +4,54 @@ import sys
 import time
 import random
 import threading
-import msvcrt
 import math
+import platform
+import select
 
-os.system("")  # Enable ANSI escape codes on Windows
+# Try to import termios and tty (Linux/Mac). If on Windows, will fail gracefully.
+if platform.system() != "Windows":
+    import termios
+    import tty
+
+########################################
+# Conditional: enable ANSI codes on Windows
+########################################
+if platform.system() == "Windows":
+    os.system("")  # Enable ANSI escape codes on Windows if possible
+
+########################################
+# Cross-platform char read:
+# - Windows -> msvcrt
+# - Linux/Mac -> select + termios
+########################################
+if platform.system() == "Windows":
+    import msvcrt
+    def get_char_nonblocking(timeout=0.05):
+        """Return a single character if available on Windows, else None."""
+        start_time = time.time()
+        while (time.time() - start_time) < timeout:
+            if msvcrt.kbhit():
+                return msvcrt.getwch()
+            time.sleep(0.01)
+        return None
+else:
+    def get_char_nonblocking(timeout=0.05):
+        """Return a single character if available on Linux/Mac, else None."""
+        # Save old terminal settings
+        old_settings = termios.tcgetattr(sys.stdin)
+        try:
+            # Switch to cbreak mode, non-blocking
+            tty.setcbreak(sys.stdin.fileno())
+            rlist, _, _ = select.select([sys.stdin], [], [], timeout)
+            if rlist:
+                return sys.stdin.read(1)
+            return None
+        finally:
+            # Restore old settings
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
 
 ##########################################################
-# 0) Define clamp, update_timer, get_input_nonblocking
+# 0) Define clamp, update_timer, and cross-platform input
 ##########################################################
 
 def clamp(value, low, high):
@@ -40,31 +81,42 @@ def update_timer(total_time, start_time, penalty, stop_event):
 
 def get_input_nonblocking(prompt, total_time, start_time, penalty):
     """
-    Non-blocking input with a time check. 
+    Cross-platform non-blocking input with a time check. 
     If time runs out, returns None.
     'penalty' is a list with one float for time penalties.
     """
     sys.stdout.write(prompt)
     sys.stdout.flush()
     user_str = ""
+
     while True:
-        if time.time() - start_time + penalty[0]>= total_time:
+        # Check time
+        if time.time() - start_time + penalty[0] >= total_time:
             return None
-        if msvcrt.kbhit():
-            ch = msvcrt.getwch()
-            if ch in ("\r","\n"):
+
+        # Read one char if available
+        ch = get_char_nonblocking(0.05)
+        if ch is not None:
+            # Windows getwch() returns '\r' for Enter, 
+            # Linux typically returns '\n'. Also handle backspace, etc.
+            if ch in ("\r", "\n"):
                 sys.stdout.write("\n")
                 sys.stdout.flush()
                 break
-            elif ch == "\b":
-                user_str= user_str[:-1]
-                sys.stdout.write("\b \b")
-                sys.stdout.flush()
+            # Handle backspace on Windows ('\b') or Linux ('\x7f' often for DEL)
+            elif ch in ("\b", "\x7f"):
+                if user_str:
+                    user_str = user_str[:-1]
+                    # Erase on screen
+                    sys.stdout.write("\b \b")
+                    sys.stdout.flush()
             else:
-                user_str+= ch
+                user_str += ch
                 sys.stdout.write(ch)
                 sys.stdout.flush()
-        time.sleep(0.05)
+
+        time.sleep(0.01)
+
     return user_str.strip()
 
 ##########################################################
@@ -111,18 +163,18 @@ def roll_stat_bell(mu=32, sigma=10):
     """
     Bell-curve around mu=32, stdev=10, clamp in [1..64].
     """
-    val= int(random.gauss(mu,sigma))
+    val = int(random.gauss(mu, sigma))
     return max(1, min(64, val))
 
 def roll_stat_bell_chosen(mu=40, sigma=10):
     """
     For chosen MC stats => bell around 40, clamp [20..64].
     """
-    v= int(random.gauss(mu,sigma))
-    if v<20:
-        v=20
-    elif v>64:
-        v=64
+    v = int(random.gauss(mu, sigma))
+    if v < 20:
+        v = 20
+    elif v > 64:
+        v = 64
     return v
 
 ##########################################################
@@ -164,9 +216,11 @@ STAT_NAME_MAP = {
 }
 
 def levenshtein_distance(s1, s2):
-    if not s1: return len(s2)
-    if not s2: return len(s1)
-    if s1[0]==s2[0]:
+    if not s1: 
+        return len(s2)
+    if not s2: 
+        return len(s1)
+    if s1[0] == s2[0]:
         return levenshtein_distance(s1[1:], s2[1:])
     return 1 + min(
         levenshtein_distance(s1[1:], s2),
@@ -175,17 +229,17 @@ def levenshtein_distance(s1, s2):
     )
 
 def guess_stat_name(user_input):
-    lower_in= user_input.strip().lower()
+    lower_in = user_input.strip().lower()
     if lower_in in STAT_NAME_MAP:
         return STAT_NAME_MAP[lower_in]
-    best_dist=9999
-    best_val=None
+    best_dist = 9999
+    best_val = None
     for possible_key, val in STAT_NAME_MAP.items():
-        dist= levenshtein_distance(lower_in, possible_key)
-        if dist<best_dist:
-            best_dist=dist
-            best_val=val
-    if best_dist> len(user_input)*2:
+        dist = levenshtein_distance(lower_in, possible_key)
+        if dist < best_dist:
+            best_dist = dist
+            best_val = val
+    if best_dist > len(user_input)*2:
         return None
     return best_val
 
@@ -194,7 +248,7 @@ def guess_stat_name(user_input):
 ##########################################################
 
 def choose_stats():
-    stats_list= [
+    stats_list = [
         "Presence (PRS)",
         "Adaptability (ADP)",
         "Instinct (INS)",
@@ -206,8 +260,8 @@ def choose_stats():
     ]
 
     while True:
-        chosen_stats=[]
-        max_spirit=False
+        chosen_stats = []
+        max_spirit = False
 
         print("\n=== Character Creation: Choose Your Core Stats ===")
         print("Pick 4 total, or only 2 if Spirit (SPT) is included.")
@@ -218,25 +272,25 @@ def choose_stats():
             print(" -", s)
 
         while True:
-            needed=2 if max_spirit else 4
-            if len(chosen_stats)>=needed:
+            needed = 2 if max_spirit else 4
+            if len(chosen_stats) >= needed:
                 break
-            user_in= input("\nPick a stat: ").strip()
+            user_in = input("\nPick a stat: ").strip()
             if not user_in:
                 print("Empty input, try again.")
                 continue
-            final_s= guess_stat_name(user_in)
+            final_s = guess_stat_name(user_in)
             if not final_s:
                 print(f"Could not guess from '{user_in}'. Try again.")
                 continue
 
-            if final_s=="Spirit (SPT)":
+            if final_s == "Spirit (SPT)":
                 # If we already have 2 picks => can't pick spirit
-                if len(chosen_stats)>=2:
+                if len(chosen_stats) >= 2:
                     print("Cannot pick Spirit now (2+ picks).")
                     continue
                 if not max_spirit:
-                    max_spirit=True
+                    max_spirit = True
                     chosen_stats.append("Spirit (SPT)")
                     print("Spirit chosen. 1 more stat total now.")
                 else:
@@ -251,20 +305,20 @@ def choose_stats():
         print("\nYou picked:")
         for cst in chosen_stats:
             print(" -", cst)
-        confirm= input("\nAre you sure? (Y/N): ").strip().lower()
-        if confirm=='y':
+        confirm = input("\nAre you sure? (Y/N): ").strip().lower()
+        if confirm == 'y':
             break
         else:
             print("Resetting picks. Press Enter to pick again.")
             input()
 
-    final_stats={}
+    final_stats = {}
     for s in stats_list:
         if s in chosen_stats:
-            v= roll_stat_bell_chosen(mu=40,sigma=10)  # ~[20..64]
+            v = roll_stat_bell_chosen(mu=40, sigma=10)  # ~[20..64]
         else:
-            v= roll_stat_bell(mu=32,sigma=10)         # ~[1..64]
-        final_stats[s]= v
+            v = roll_stat_bell(mu=32, sigma=10)         # ~[1..64]
+        final_stats[s] = v
 
     print("\n=== Final MC Stats (1..64) ===")
     print("(Chosen => ~[20..64], unchosen => [1..64], both bell-curve).")
@@ -305,17 +359,17 @@ def generate_ntr_target_stats():
 ##########################################################
 
 def describe_attire(gender):
-    if gender=="male":
+    if gender == "male":
         return "loose sleep shorts and a comfortable t-shirt"
-    elif gender=="female":
+    elif gender == "female":
         return "light, somewhat revealing sleepwear"
     else:
         return "casual lounge attire that doesn't cover much"
 
 def sibling_label(age_status):
-    if age_status=="older":
+    if age_status == "older":
         return "older sibling"
-    elif age_status=="younger":
+    elif age_status == "younger":
         return "younger sibling"
     else:
         return "twin sibling"
@@ -333,22 +387,22 @@ def synergy_convo(mc_stats, target_stats, victim_stats):
       Then multiply final synergy by (1 + luck_factor) from Spirit (SPT).
     We store a synergy breakdown for each line in the conversation log.
     """
-    total_time=90
-    start_time=time.time()
-    penalty=[0]
-    stop_event=threading.Event()
+    total_time = 90
+    start_time = time.time()
+    penalty = [0]
+    stop_event = threading.Event()
 
-    synergy_score=0.0
-    conversation_log=[]
+    synergy_score = 0.0
+    conversation_log = []
 
     # We'll compute a Spirit-based luck factor:
     # if SPT=32 => factor=0 => no effect
     # if SPT=64 => factor=+0.05 => +5%
     # if SPT=1 => factor ~ -5%
-    SPT_val= mc_stats["Spirit (SPT)"]
-    luck_factor= (SPT_val - 32)/32 * 0.05  # ~ -0.05..+0.05
+    SPT_val = mc_stats["Spirit (SPT)"]
+    luck_factor = (SPT_val - 32) / 32 * 0.05  # ~ -0.05..+0.05
 
-    interactions= [
+    interactions = [
         {
             "prompt": "[Target sees your outburst...]",
             "options":{
@@ -438,19 +492,19 @@ def synergy_convo(mc_stats, target_stats, victim_stats):
         }
     ]
 
-    tthread= threading.Thread(target=update_timer, args=(total_time,start_time,penalty,stop_event))
-    tthread.daemon=True
+    tthread = threading.Thread(target=update_timer, args=(total_time, start_time, penalty, stop_event))
+    tthread.daemon = True
     tthread.start()
 
     for inter in interactions:
-        conversation_log.append("\n"+ inter["prompt"])
-        print("\n"+ inter["prompt"])
-        for k,optdata in inter["options"].items():
-            line_str= f" {k}. {optdata['text']}"
+        conversation_log.append("\n" + inter["prompt"])
+        print("\n" + inter["prompt"])
+        for k, optdata in inter["options"].items():
+            line_str = f" {k}. {optdata['text']}"
             print(line_str)
             conversation_log.append(line_str)
 
-        resp= get_input_nonblocking("\nChoose (1,2,3): ", total_time,start_time, penalty)
+        resp = get_input_nonblocking("\nChoose (1,2,3): ", total_time, start_time, penalty)
         if resp is None:
             print("\nTime's up mid-conversation!")
             conversation_log.append("\n[Time ended mid-conversation!]")
@@ -459,9 +513,9 @@ def synergy_convo(mc_stats, target_stats, victim_stats):
             return synergy_score, conversation_log
         while resp not in ["1","2","3"]:
             print("Invalid choice. +10s penalty.")
-            penalty[0]+=10
+            penalty[0] += 10
             conversation_log.append(f"[Invalid => +10s penalty (User typed {resp})]")
-            resp= get_input_nonblocking("Choose (1,2,3): ", total_time,start_time, penalty)
+            resp = get_input_nonblocking("Choose (1,2,3): ", total_time, start_time, penalty)
             if resp is None:
                 print("\nTime's up after invalid input.")
                 conversation_log.append("\n[Time ended after invalid attempt!]")
@@ -469,14 +523,14 @@ def synergy_convo(mc_stats, target_stats, victim_stats):
                 tthread.join()
                 return synergy_score, conversation_log
 
-        synergy_tags= inter["options"][resp]["synergy"]
-        # Now we compute synergy + a breakdown
-        synergy_val, detail_str= compute_choice_synergy_breakdown(mc_stats, target_stats, victim_stats, synergy_tags, luck_factor)
-        synergy_score+= synergy_val
-        synergy_msg= f"[Chose {resp}, synergy +{synergy_val:.2f}]"
+        synergy_tags = inter["options"][resp]["synergy"]
+        # Now compute synergy + a breakdown
+        synergy_val, detail_str = compute_choice_synergy_breakdown(mc_stats, target_stats, victim_stats, synergy_tags, luck_factor)
+        synergy_score += synergy_val
+        synergy_msg = f"[Chose {resp}, synergy +{synergy_val:.2f}]"
         conversation_log.append(synergy_msg)
-        conversation_log.append(detail_str)  # The synergy breakdown
-        print(synergy_msg+"\n")
+        conversation_log.append(detail_str)
+        print(synergy_msg + "\n")
 
     stop_event.set()
     tthread.join()
@@ -491,18 +545,18 @@ def compute_choice_synergy_breakdown(mc_stats, target_stats, victim_stats, syner
       - Then multiply final synergy by (1+luck_factor)
     We'll record each step in detail_str.
     """
-    baseline= 2.0
-    synergy_line= baseline
-    detail_list= []
+    baseline = 2.0
+    synergy_line = baseline
+    detail_list = []
     detail_list.append(f"Baseline={baseline:.2f}")
 
     # We'll accumulate numeric values for MC, Target, Rival penalty
-    mc_total= 0.0
-    tgt_total= 0.0
-    rv_penalty= 0.0
+    mc_total = 0.0
+    tgt_total = 0.0
+    rv_penalty = 0.0
 
     # For easier referencing
-    mc_map= {
+    mc_map = {
         "Presence":"Presence (PRS)",
         "Adaptability":"Adaptability (ADP)",
         "Instinct":"Instinct (INS)",
@@ -512,14 +566,14 @@ def compute_choice_synergy_breakdown(mc_stats, target_stats, victim_stats, syner
         "Resonance":"Resonance (RSN)",
         "Spirit":"Spirit (SPT)"
     }
-    tgt_map= {
+    tgt_map = {
         "Anchoring":"Emotional Anchoring (EAC)",
         "ThrillIncl":"Thrill Inclination (THI)",
         "Autonomy":"Autonomy Drive (ATD)",
         "Masking":"Social Masking (SOM)",
         "RPM":"Response Momentum (RPM)"
     }
-    rv_map= {
+    rv_map = {
         "SCM":"Social Command (SCM)",
         "IAW":"Instinctive Awareness (IAW)",
         "RLP":"Relational Pull (RLP)",
@@ -528,27 +582,27 @@ def compute_choice_synergy_breakdown(mc_stats, target_stats, victim_stats, syner
 
     # Gains from MC
     for shortn in synergy_tags.get("MC_needed", []):
-        fk= mc_map.get(shortn)
+        fk = mc_map.get(shortn)
         if fk and fk in mc_stats:
-            ratio= mc_stats[fk]/64.0
-            gain= ratio*1.2
+            ratio = mc_stats[fk]/64.0
+            gain = ratio*1.2
             mc_total += gain
 
     # Gains from Target
     for shortn in synergy_tags.get("Target_needed", []):
-        fk= tgt_map.get(shortn)
+        fk = tgt_map.get(shortn)
         if fk and fk in target_stats:
-            ratio= target_stats[fk]/64.0
-            gain= ratio*1.2
+            ratio = target_stats[fk]/64.0
+            gain = ratio*1.2
             tgt_total += gain
 
     # Rival penalty
     for shortn in synergy_tags.get("Victim_risk", []):
-        fk= rv_map.get(shortn)
+        fk = rv_map.get(shortn)
         if fk and fk in victim_stats:
-            ratio= victim_stats[fk]/64.0
-            penalty= ratio*2.0
-            rv_penalty+= penalty
+            ratio = victim_stats[fk]/64.0
+            penalty = ratio*2.0
+            rv_penalty += penalty
 
     synergy_line += mc_total
     synergy_line += tgt_total
@@ -558,18 +612,17 @@ def compute_choice_synergy_breakdown(mc_stats, target_stats, victim_stats, syner
     detail_list.append(f"+Target={tgt_total:.2f}")
     detail_list.append(f"-Rival={rv_penalty:.2f}")
 
-    pre_luck= synergy_line
+    pre_luck = synergy_line
     detail_list.append(f"=> pre-luck= {pre_luck:.2f}")
 
     # luck factor
-    synergy_line*= (1 + luck_factor)
-    synergy_line= clamp(synergy_line,0,10)
-    luck_pct= luck_factor*100
+    synergy_line *= (1 + luck_factor)
+    synergy_line = clamp(synergy_line, 0, 10)
+    luck_pct = luck_factor * 100
     detail_list.append(f"luck= {luck_pct:+.2f}% => final= {synergy_line:.2f}")
 
-    detail_str= "[Detail] " + " ".join(detail_list)
+    detail_str = "[Detail] " + " ".join(detail_list)
     return synergy_line, detail_str
-
 
 ##########################################################
 # H) MAIN
@@ -582,55 +635,55 @@ def main():
     input("Press Enter to begin...")
 
     # 1) Basic user info
-    user_name= input("What is your name? ").strip()
-    user_age_str= input("How old are you? (Must be >21): ").strip()
+    user_name = input("What is your name? ").strip()
+    user_age_str = input("How old are you? (Must be >21): ").strip()
     try:
-        user_age= int(user_age_str)
+        user_age = int(user_age_str)
     except:
         print("Invalid age. Exiting.")
         return
-    if user_age<=21:
+    if user_age <= 21:
         print("Sorry, you're too young for this game.")
         return
 
-    user_gender= input("What is your gender? (male/female/other): ").strip().lower()
+    user_gender = input("What is your gender? (male/female/other): ").strip().lower()
     while user_gender not in ["male","female","other"]:
-        user_gender= input("Please type 'male','female','other': ").strip().lower()
+        user_gender = input("Please type 'male','female','other': ").strip().lower()
 
-    target_gender= input("NTR Target's gender? (male/female/other): ").strip().lower()
+    target_gender = input("NTR Target's gender? (male/female/other): ").strip().lower()
     while target_gender not in ["male","female","other"]:
-        target_gender= input("Please type 'male','female','other': ").strip().lower()
+        target_gender = input("Please type 'male','female','other': ").strip().lower()
 
     print(f"\nHello {user_name}, age {user_age}, you are {user_gender}, aiming for a {target_gender} target.\n")
     input("Press Enter to pick your MC stats...")
 
     # 2) MC Stats
-    mc_stats= choose_stats()
+    mc_stats = choose_stats()
 
     # 3) Rival & Target
-    victim_stats= generate_ntr_victim_stats()
-    target_stats= generate_ntr_target_stats()
+    victim_stats = generate_ntr_victim_stats()
+    target_stats = generate_ntr_target_stats()
 
     # Sibling
-    sibling_age_status= random.choice(["older","younger","twins"])
-    sibling_gender= target_gender
-    attire= describe_attire(sibling_gender)
-    sibling_role= sibling_label(sibling_age_status)
+    sibling_age_status = random.choice(["older","younger","twins"])
+    sibling_gender = target_gender
+    attire = describe_attire(sibling_gender)
+    sibling_role = sibling_label(sibling_age_status)
 
     # Noticing => modifies shower time
-    raw_player_notice= random.randint(1,100)
-    inst_val= mc_stats.get("Instinct (INS)",0)
-    eff_player_notice= raw_player_notice+ max(inst_val-10,0)
-    raw_friend_notice= random.randint(1,100)
-    player_notices= (eff_player_notice>=50)
-    friend_notices= (raw_friend_notice>=50)
+    raw_player_notice = random.randint(1,100)
+    inst_val = mc_stats.get("Instinct (INS)",0)
+    eff_player_notice = raw_player_notice + max(inst_val - 10, 0)
+    raw_friend_notice = random.randint(1,100)
+    player_notices = (eff_player_notice >= 50)
+    friend_notices = (raw_friend_notice >= 50)
 
     print("\n=== NTR Victim (Rival) Stats (Bell Dist) ===")
-    for k,v in victim_stats.items():
+    for k, v in victim_stats.items():
         print(f" {k}: {v}")
 
     print("\n=== NTR Target Stats (Bell Dist) ===")
-    for k,v in target_stats.items():
+    for k, v in target_stats.items():
         print(f" {k}: {v}")
 
     input("\nPress Enter for scenario...")
@@ -652,49 +705,51 @@ def main():
 
     # Shower time logic
     if friend_notices:
-        if raw_friend_notice<10:
-            reduction=0.0
-        elif raw_friend_notice<=35:
-            reduction= 0.10+ ((raw_friend_notice-10)/25)*0.15
+        if raw_friend_notice < 10:
+            reduction = 0.0
+        elif raw_friend_notice <= 35:
+            reduction = 0.10 + ((raw_friend_notice - 10) / 25)*0.15
         else:
-            reduction=0.25
+            reduction = 0.25
     else:
-        reduction=0.0
-    if sibling_age_status=="older":
-        reduction= max(reduction-0.05,0)
-    elif sibling_age_status=="younger":
-        reduction= min(reduction+0.05,1)
+        reduction = 0.0
 
-    original_time=120
-    new_shower= int(original_time*(1-reduction))
+    if sibling_age_status == "older":
+        reduction = max(reduction - 0.05, 0)
+    elif sibling_age_status == "younger":
+        reduction = min(reduction + 0.05, 1)
+
+    original_time = 120
+    new_shower = int(original_time * (1 - reduction))
     print(f"Shower time is now {new_shower}/{original_time} seconds.\n")
 
-    print("Your friend is showering. Do you talk to the sibling?\n1. Small Talk\n2. Address the Incident\n3. Stay Silent")
-    cchoice= input("Enter choice (1-3): ").strip()
+    print("Your friend is showering. Do you talk to the sibling?")
+    print("1. Small Talk\n2. Address the Incident\n3. Stay Silent")
+    cchoice = input("Enter choice (1-3): ").strip()
     while cchoice not in ["1","2","3"]:
-        cchoice= input("Enter choice (1-3): ").strip()
+        cchoice = input("Enter choice (1-3): ").strip()
 
-    synergy_score=0.0
-    conversation_log=[]
+    synergy_score = 0.0
+    conversation_log = []
     if cchoice in ["1","2"]:
         print("\n[You decide to talk with synergy-based approach (Hard + Spirit luck).]\n")
-        synergy_score, conversation_log= synergy_convo(mc_stats, target_stats, victim_stats)
+        synergy_score, conversation_log = synergy_convo(mc_stats, target_stats, victim_stats)
     else:
         print("\n[You remain silent, no synergy conversation.]\n")
 
     # Evaluate synergy
-    outcome_str="No conversation"
-    max_synergy=3*10
-    if synergy_score>0:
-        if synergy_score>=25:
-            outcome_str="NTR Option Unlocked!"
-        elif synergy_score>=15:
-            outcome_str="Partially intrigued"
+    outcome_str = "No conversation"
+    max_synergy = 3*10
+    if synergy_score > 0:
+        if synergy_score >= 25:
+            outcome_str = "NTR Option Unlocked!"
+        elif synergy_score >= 15:
+            outcome_str = "Partially intrigued"
         else:
-            outcome_str="Unimpressed"
+            outcome_str = "Unimpressed"
 
     # 4) Write final results
-    file_name="results_synergy.txt"
+    file_name = "results_synergy.txt"
     with open(file_name,"w",encoding="utf-8") as f:
         f.write("=== Final Extended NTR Results (Harder) + Spirit as Luck + Detailed Breakdown ===\n\n")
         f.write(f"Player Name: {user_name}\n")
@@ -719,15 +774,15 @@ def main():
         f.write(f"Friend Notice Roll: {raw_friend_notice}, Noticed? {friend_notices}\n")
         f.write(f"Shower Time => {new_shower}/{original_time}\n")
 
-        if synergy_score>0:
+        if synergy_score > 0:
             f.write(f"\nUser conversed => synergy= {synergy_score:.2f}/{max_synergy}\nOutcome= {outcome_str}\n")
             f.write("\n--- Conversation Log + Detailed Synergy ---\n")
             for line in conversation_log:
-                f.write(line+"\n")
+                f.write(line + "\n")
         else:
             f.write("\nUser stayed silent => no synergy conversation.\n")
 
-    if synergy_score>0:
+    if synergy_score > 0:
         print(f"\nConversation synergy= {synergy_score:.2f}/{max_synergy}")
         print("Outcome:", outcome_str)
     else:
@@ -736,5 +791,5 @@ def main():
     print(f"\nDetailed synergy breakdown saved to '{file_name}'. Press Enter to exit.")
     input()
 
-if __name__=="__main__":
+if __name__ == "__main__":
     main()
