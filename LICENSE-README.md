@@ -23,4 +23,4 @@ You may not:
     Use this project in AI training datasets
 
 All game code, assets, art, music, and writing are copyright © [iamgodbutiam404], [2025].
-If you're interested in collaborating or have questions about usage, feel free to [open an issue or contact me](https://github.com/your-repo/issues).
+If you're interested in collaborating or have questions about usage, feel free to [open an issue or contact me on Discord: @iamgodbutiamweak](https://github.com/your-repo/issues).
