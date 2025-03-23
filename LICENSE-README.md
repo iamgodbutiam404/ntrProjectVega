@@ -23,4 +23,4 @@ You may not:
     Use this project in AI training datasets
 
 All game code, assets, art, music, and writing are copyright © [iamgodbutiam404], [2025].
-If you're interested in collaborating or have questions about usage, feel free to [open an issue](https://github.com/your-repo/issues) or contact me on Discord: @iamgodbutiamweak.
+If you're interested in collaborating or have questions about usage, feel free to [open an issue](https://github.com/iamgodbutiam404/ntrProjectVega/issues) or contact me on Discord: @iamgodbutiamweak.
